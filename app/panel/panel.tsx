@@ -106,88 +106,96 @@ export function Dashboard() {
     components: { MuiButton: { styleOverrides: { root: { borderRadius: '8px', textTransform: 'none', fontWeight: 'bold' } } } }
   }), [themeMode]);
 
-    useEffect(() => {
-      let timeoutId: ReturnType<typeof setTimeout> | null = null;
-  
-      function connect() {
-        // جلوگیری از ایجاد اتصال‌های متعدد
-        if (ws && ws.readyState !== WebSocket.CLOSED) {
-          console.log("WebSocket is already connected or connecting.");
-          return;
-        }
-        
+  useEffect(() => {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let messageBuffer = ''; // <--- بافر برای نگهداری پیام‌های ناقص
+
+    function connect() {
+        if (ws && ws.readyState !== WebSocket.CLOSED) return;
+
         console.log("Attempting to connect to WebSocket...");
         const socket = new WebSocket('ws://localhost:5000');
-        
+        setWs(socket);
+
         socket.onopen = () => {
-          console.log('WebSocket connection established.');
-          setConnectionStatus(ConnectionStatus.Connected);
-          setWs(socket); // اتصال موفق را در state ذخیره کن
-          // اگر تایمر اتصال مجدد در حال اجرا بود، آن را پاک کن
-          if (timeoutId) {
-            clearTimeout(timeoutId);
-            timeoutId = null;
-          }
-        };
-        
-        socket.onclose = (event) => {
-          console.log(`WebSocket connection closed: ${event.code}. Reconnecting...`);
-          setConnectionStatus(ConnectionStatus.Disconnected);
-          setWs(null); // اتصال را از state پاک کن
-          // تلاش برای اتصال مجدد پس از ۳ ثانیه
-          if (!timeoutId) {
-            timeoutId = setTimeout(connect, 3000);
-          }
-        };
-        
-        socket.onerror = (error) => {
-          console.error('WebSocket error:', error);
-          // onclose به صورت خودکار پس از onerror فراخوانی می‌شود،
-          // بنابراین منطق اتصال مجدد در آنجا مدیریت می‌شود.
-          socket.close();
-        };
-    
-        socket.onmessage = (event) => {
-          try {
-            const message = JSON.parse(event.data);
-            switch (message.type) {
-              case 'trade_data':
-                setTrades(message.data.trades || []);
-                setTotalPL(message.data.total_pl || 0);
-                setSymbol(message.data.symbol || 'N/A');
-                break;
-              case 'settings':
-                setSettings(message.data || {});
-                break;
-              case 'feedback':
-                const feedback = message.data;
-                if (feedback.status === 'success') toast.success(feedback.message);
-                else if (feedback.status === 'error') toast.error(feedback.message);
-                else toast(feedback.message, { icon: 'ℹ️' });
-                break;
+            console.log('WebSocket connection established.');
+            setConnectionStatus(ConnectionStatus.Connected);
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+                timeoutId = null;
             }
-          } catch (e) { console.error("Error parsing message:", e); }
         };
-      }
-  
-      // اولین تلاش برای اتصال هنگام بالا آمدن کامپوننت
-      connect();
-    
-      // تابع پاک‌سازی (Cleanup Function)
-      return () => {
-        // تایمر اتصال مجدد را پاک کن تا پس از unmount شدن کامپوننت، تلاش مجددی صورت نگیرد
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-        }
-        // اگر اتصالی وجود دارد، آن را به درستی ببند
+
+        socket.onclose = () => {
+            console.log(`WebSocket connection closed. Reconnecting...`);
+            setConnectionStatus(ConnectionStatus.Disconnected);
+            setWs(null);
+            if (!timeoutId) {
+                timeoutId = setTimeout(connect, 3000);
+            }
+        };
+
+        socket.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            socket.close();
+        };
+
+        socket.onmessage = (event) => {
+          console.log('log row data :',event.data);
+          
+            // 1. داده جدید را به بافر اضافه کن
+            messageBuffer += event.data;
+
+            // 2. تا زمانی که جداکننده در بافر وجود دارد، پیام‌ها را پردازش کن
+            while (messageBuffer.includes('\n')) {
+                const messageEndIndex = messageBuffer.indexOf('\n');
+                // پیام کامل را از بافر جدا کن
+                const completeMessage = messageBuffer.substring(0, messageEndIndex);
+                // پیام پردازش شده را از ابتدای بافر حذف کن
+                messageBuffer = messageBuffer.substring(messageEndIndex + 1);
+
+                // 3. حالا پیام کامل و معتبر را parse کن
+                try {
+                    const message = JSON.parse(completeMessage);
+                    // ... بقیه کد سوییچ شما مثل قبل
+                    switch (message.type) {
+                      case 'trade_data':
+                        setTrades(message.data.trades || []);
+                        setTotalPL(message.data.total_pl || 0);
+                        setSymbol(message.data.symbol || 'N/A');
+                        // آپدیت کردن تنظیمات همراه با داده‌های ترید
+                        if(message.data.settings) {
+                          setSettings(message.data.settings || {});
+                        }
+                        break;
+                      case 'settings':
+                        setSettings(message.data || {});
+                        break;
+                      case 'feedback':
+                        const feedback = message.data;
+                        if (feedback.status === 'success') toast.success(feedback.message);
+                        else if (feedback.status === 'error') toast.error(feedback.message);
+                        else toast(feedback.message, { icon: 'ℹ️' });
+                        break;
+                    }
+                } catch (e) {
+                    console.error("Error parsing complete message:", e);
+                    console.error("The problematic message was:", completeMessage);
+                }
+            }
+        };
+    }
+
+    connect();
+
+    return () => {
+        if (timeoutId) clearTimeout(timeoutId);
         if (ws) {
-          // event listener مربوط به onclose را حذف می‌کنیم تا از تلاش برای اتصال مجدد جلوگیری شود
-          ws.onclose = null; 
-          ws.close();
+            ws.onclose = null;
+            ws.close();
         }
-      };
-    }, []); // وابستگی خالی `[]` تضمین می‌کند که این افکت فقط یک بار اجرا شود
-  
+    };
+}, []); 
   
   const hasProfits = useMemo(() => trades.some((t) => t.profit > 0), [trades]);
   const hasLosses = useMemo(() => trades.some((t) => t.profit < 0), [trades]);
