@@ -3,8 +3,8 @@ import { Dashboard } from "../panel/panel";
 
 export function meta({}: Route.MetaArgs) {
   return [
-    { title: "New React Router App" },
-    { name: "description", content: "Welcome to React Router!" },
+    { title: "Griffin-Guard-Dashboard" },
+    { name: "description", content: "Welcome to Griffin-Guard!" },
   ];
 }
 

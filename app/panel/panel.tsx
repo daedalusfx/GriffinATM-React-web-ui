@@ -106,51 +106,88 @@ export function Dashboard() {
     components: { MuiButton: { styleOverrides: { root: { borderRadius: '8px', textTransform: 'none', fontWeight: 'bold' } } } }
   }), [themeMode]);
 
-    // 2. به‌روزرسانی useEffect برای ذخیره اتصال
     useEffect(() => {
-      const socket = new WebSocket('ws://localhost:5000');
-      
-      socket.onopen = () => {
-        setConnectionStatus(ConnectionStatus.Connected);
-        setWs(socket); // <-- ذخیره کردن اتصال در استیت
-      };
-      
-      socket.onclose = () => {
-        setConnectionStatus(ConnectionStatus.Disconnected);
-        setWs(null); // <-- پاک کردن اتصال از استیت
-      };
-      
-      socket.onerror = () => {
-        setConnectionStatus(ConnectionStatus.Disconnected);
-        setWs(null);
-      };
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
   
-      socket.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-          switch (message.type) {
-            case 'trade_data':
-              setTrades(message.data.trades || []);
-              setTotalPL(message.data.total_pl || 0);
-              setSymbol(message.data.symbol || 'N/A');
-              break;
-            case 'settings':
-              setSettings(message.data || {});
-              break;
-            case 'feedback':
-              const feedback = message.data;
-              if (feedback.status === 'success') toast.success(feedback.message);
-              else if (feedback.status === 'error') toast.error(feedback.message);
-              else toast(feedback.message, { icon: 'ℹ️' });
-              break;
+      function connect() {
+        // جلوگیری از ایجاد اتصال‌های متعدد
+        if (ws && ws.readyState !== WebSocket.CLOSED) {
+          console.log("WebSocket is already connected or connecting.");
+          return;
+        }
+        
+        console.log("Attempting to connect to WebSocket...");
+        const socket = new WebSocket('ws://localhost:5000');
+        
+        socket.onopen = () => {
+          console.log('WebSocket connection established.');
+          setConnectionStatus(ConnectionStatus.Connected);
+          setWs(socket); // اتصال موفق را در state ذخیره کن
+          // اگر تایمر اتصال مجدد در حال اجرا بود، آن را پاک کن
+          if (timeoutId) {
+            clearTimeout(timeoutId);
+            timeoutId = null;
           }
-        } catch (e) { console.error("Error parsing message:", e); }
-      };
-  
-      return () => {
+        };
+        
+        socket.onclose = (event) => {
+          console.log(`WebSocket connection closed: ${event.code}. Reconnecting...`);
+          setConnectionStatus(ConnectionStatus.Disconnected);
+          setWs(null); // اتصال را از state پاک کن
+          // تلاش برای اتصال مجدد پس از ۳ ثانیه
+          if (!timeoutId) {
+            timeoutId = setTimeout(connect, 3000);
+          }
+        };
+        
+        socket.onerror = (error) => {
+          console.error('WebSocket error:', error);
+          // onclose به صورت خودکار پس از onerror فراخوانی می‌شود،
+          // بنابراین منطق اتصال مجدد در آنجا مدیریت می‌شود.
           socket.close();
+        };
+    
+        socket.onmessage = (event) => {
+          try {
+            const message = JSON.parse(event.data);
+            switch (message.type) {
+              case 'trade_data':
+                setTrades(message.data.trades || []);
+                setTotalPL(message.data.total_pl || 0);
+                setSymbol(message.data.symbol || 'N/A');
+                break;
+              case 'settings':
+                setSettings(message.data || {});
+                break;
+              case 'feedback':
+                const feedback = message.data;
+                if (feedback.status === 'success') toast.success(feedback.message);
+                else if (feedback.status === 'error') toast.error(feedback.message);
+                else toast(feedback.message, { icon: 'ℹ️' });
+                break;
+            }
+          } catch (e) { console.error("Error parsing message:", e); }
+        };
+      }
+  
+      // اولین تلاش برای اتصال هنگام بالا آمدن کامپوننت
+      connect();
+    
+      // تابع پاک‌سازی (Cleanup Function)
+      return () => {
+        // تایمر اتصال مجدد را پاک کن تا پس از unmount شدن کامپوننت، تلاش مجددی صورت نگیرد
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+        // اگر اتصالی وجود دارد، آن را به درستی ببند
+        if (ws) {
+          // event listener مربوط به onclose را حذف می‌کنیم تا از تلاش برای اتصال مجدد جلوگیری شود
+          ws.onclose = null; 
+          ws.close();
+        }
       };
-    }, []);
+    }, []); // وابستگی خالی `[]` تضمین می‌کند که این افکت فقط یک بار اجرا شود
+  
   
   const hasProfits = useMemo(() => trades.some((t) => t.profit > 0), [trades]);
   const hasLosses = useMemo(() => trades.some((t) => t.profit < 0), [trades]);
@@ -294,11 +331,15 @@ function ConfirmationDialog({ isOpen, title, description, onConfirm, onClose }: 
 interface SettingsDialogProps { open: boolean; onClose: () => void; settings: Settings; onSave: (settings: Settings) => void; }
 function SettingsDialog({ open, onClose, settings, onSave }: SettingsDialogProps) {
     const [localSettings, setLocalSettings] = useState<Settings>(settings);
-    useEffect(() => { setLocalSettings(settings); }, [settings, open]);
+    useEffect(() => { setLocalSettings(settings); }, [settings]);
     const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const { name, value, type, checked } = e.target;
         setLocalSettings(prev => ({ ...prev, [name]: type === 'checkbox' ? checked : parseFloat(value) || 0 }));
     };
+    function SaveAndCloseModal() {
+      onSave(localSettings)
+      onClose()
+    }
     if (!open) return null;
     return (
         <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm" PaperProps={{ sx: { borderRadius: 2 } }}>
@@ -312,7 +353,7 @@ function SettingsDialog({ open, onClose, settings, onSave }: SettingsDialogProps
             </DialogContent>
             <DialogActions sx={{ p: 2 }}>
                 <Button onClick={onClose}>انصراف</Button>
-                <Button onClick={() => onSave(localSettings)} variant="contained">ذخیره</Button>
+                <Button onClick={() => SaveAndCloseModal()} variant="contained">ذخیره</Button>
             </DialogActions>
         </Dialog>
     );
